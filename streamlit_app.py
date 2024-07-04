@@ -11,7 +11,7 @@ import logging
 import os
 import shutil
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import ollama
 import pdfplumber
@@ -44,7 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-@st.cache_resource(show_spinner=True)
+@st.cache_data(show_spinner=True)
 def extract_model_names(
     models_info: Dict[str, List[Dict[str, Any]]],
 ) -> Tuple[str, ...]:
@@ -62,13 +62,12 @@ def extract_model_names(
     logger.info(f"Extracted model names: {model_names}")
     return model_names
 
-
 def create_vector_db(file_uploads: List[Any]) -> Chroma:
     """
-    Create a vector database from an uploaded PDF file.
+    Create a vector database from uploaded PDF files.
 
     Args:
-        file_upload (List[ANY]): Streamlit file upload object containing the PDF.
+        file_uploads (List[Any]): Streamlit file upload objects containing the PDFs.
 
     Returns:
         Chroma: A vector store containing the processed document chunks.
@@ -85,7 +84,7 @@ def create_vector_db(file_uploads: List[Any]) -> Chroma:
             loader = PyPDFLoader(path)
             data = loader.load()
 
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=7500, chunk_overlap=100)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=5000, chunk_overlap=200)
         file_chunks = text_splitter.split_documents(data)
         chunks.extend(file_chunks)
 
@@ -121,55 +120,58 @@ def process_question(question: str, vector_db: Chroma, selected_model: str) -> s
     Returns:
         str: The generated response to the user's question.
     """
-    logger.info(f"""Processing question: {
-                question} using model: {selected_model}""")
-    llm = ChatOllama(model=selected_model, temperature=0)
-    QUERY_PROMPT = PromptTemplate(
-        input_variables=["question"],
-        template="""You are an AI language model assistant. Your task is to generate 3
-        different versions of the given user question to retrieve relevant documents from
-        a vector database. By generating multiple perspectives on the user question, your
-        goal is to help the user overcome some of the limitations of the distance-based
-        similarity search. Provide these alternative questions separated by newlines.
-        Original question: {question}""",
-    )
+    logger.info(f"Processing question: {question} using model: {selected_model}")
+    try:
+        llm = ChatOllama(model=selected_model, temperature=0)
+        QUERY_PROMPT = PromptTemplate(
+            input_variables=["question"],
+            template="""You are an AI language model assistant. Your task is to generate 3
+            different versions of the given user question to retrieve relevant documents from
+            a vector database. By generating multiple perspectives on the user question, your
+            goal is to help the user overcome some of the limitations of the distance-based
+            similarity search. Provide these alternative questions separated by newlines.
+            Original question: {question}""",
+        )
 
-    retriever = MultiQueryRetriever.from_llm(
-        vector_db.as_retriever(), llm, prompt=QUERY_PROMPT
-    )
+        retriever = MultiQueryRetriever.from_llm(
+            vector_db.as_retriever(search_kwargs={"k": 10}), llm, prompt=QUERY_PROMPT
+        )
 
-    template = """Answer the question based ONLY on the following context:
-    {context}
-    Question: {question}
-    If you don't know the answer, just say that you don't know, don't try to make up an answer.
-    Only provide the answer from the {context}, nothing else.
-    Add snippets of the context you used to answer the question.
-    """
+        template = """Answer the question based ONLY on the following context:
+        {context}
+        Question: {question}
+        If you don't know the answer, just say that you don't know, don't try to make up an answer.
+        Only provide the answer from the {context}, nothing else.
+        Add snippets of the context you used to answer the question.
+        """
 
-    prompt = ChatPromptTemplate.from_template(template)
+        prompt = ChatPromptTemplate.from_template(template)
 
-    chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+        chain = (
+            {"context": retriever, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
+        )
 
-    response = chain.invoke(question)
-    logger.info("Question processed and response generated")
-    return response
+        response = chain.invoke(question)
+        logger.info("Question processed and response generated")
+        return response
+    except Exception as e:
+        logger.error(f"Error processing question: {e}")
+        return f"An error occurred while processing your question: {str(e)}"
 
 
 @st.cache_data
-def extract_all_pages_as_images(file_uploads: List[Any]) -> Dict[str,List[Any]]:
+def extract_all_pages_as_images(file_uploads: List[Any]) -> Dict[str, List[Any]]:
     """
-    Extract all pages from a PDF file as images.
+    Extract all pages from PDF files as images.
 
     Args:
-        file_upload (st.UploadedFile): Streamlit file upload object containing the PDF.
+        file_uploads (List[Any]): Streamlit file upload objects containing the PDFs.
 
     Returns:
-        List[Any]: A list of image objects representing each page of the PDF.
+        Dict[str, List[Any]]: A dictionary mapping file names to lists of image objects representing each page of the PDF.
     """
     logger.info(f"Extracting all pages as images from {len(file_uploads)} files")
     pdf_pages = {}
@@ -180,12 +182,12 @@ def extract_all_pages_as_images(file_uploads: List[Any]) -> Dict[str,List[Any]]:
     return pdf_pages
 
 
-def delete_vector_db(vector_db: Optional[Chroma]) -> None:
+def delete_vector_db(vector_db: Chroma) -> None:
     """
     Delete the vector database and clear related session state.
 
     Args:
-        vector_db (Optional[Chroma]): The vector database to be deleted.
+        vector_db (Chroma): The vector database to be deleted.
     """
     logger.info("Deleting vector DB")
     if vector_db is not None:
@@ -213,8 +215,13 @@ def main() -> None:
     """
     st.subheader("⚡🤓🪄 Harry Potter Ollama PDF RAG", divider="gray", anchor=False)
 
-    models_info = ollama.list()
-    available_models = extract_model_names(models_info)
+    try:
+        models_info = ollama.list()
+        available_models = extract_model_names(models_info)
+    except Exception as e:
+        logger.error(f"Error fetching available models: {e}")
+        st.error("Unable to fetch available models. Please check your Ollama installation.")
+        return
 
     col1, col2 = st.columns([1.5, 2])
 
@@ -228,9 +235,12 @@ def main() -> None:
         selected_model = col2.selectbox(
             "Pick a model available locally on your system ↓", available_models
         )
+    else:
+        st.warning("No models available. Please install at least one model using Ollama.")
+        return
 
     file_uploads = col1.file_uploader(
-        "Upload a PDF files ↓", type="pdf", accept_multiple_files=True
+        "Upload PDF files ↓", type="pdf", accept_multiple_files=True
     )
 
     if file_uploads:
@@ -253,6 +263,7 @@ def main() -> None:
 
         with col1:
             with st.container(height=410, border=True):
+                pdf_pages = extract_all_pages_as_images(file_uploads)
                 for file_name, pages in pdf_pages.items():
                     st.subheader(f"File: {file_name}")
                     for page_image in pages:
@@ -272,28 +283,23 @@ def main() -> None:
                 st.markdown(message["content"])
 
         if prompt := st.chat_input("Enter a prompt here..."):
-            try:
-                st.session_state["messages"].append({"role": "user", "content": prompt})
-                message_container.chat_message("user", avatar="🧙‍♂️").markdown(prompt)
+            st.session_state["messages"].append({"role": "user", "content": prompt})
+            message_container.chat_message("user", avatar="🧙‍♂️").markdown(prompt)
 
-                with message_container.chat_message("assistant", avatar="🪄"):
-                    with st.spinner(":green[processing...]"):
-                        if st.session_state["vector_db"] is not None:
-                            response = process_question(
-                                prompt, st.session_state["vector_db"], selected_model
-                            )
-                            st.markdown(response)
-                        else:
-                            st.warning("Please upload a PDF file first.")
+            with message_container.chat_message("assistant", avatar="🪄"):
+                with st.spinner(":green[processing...]"):
+                    if st.session_state["vector_db"] is not None:
+                        response = process_question(
+                            prompt, st.session_state["vector_db"], selected_model
+                        )
+                        st.markdown(response)
+                    else:
+                        st.warning("Please upload a PDF file first.")
 
-                if st.session_state["vector_db"] is not None:
-                    st.session_state["messages"].append(
-                        {"role": "assistant", "content": response}
-                    )
-
-            except Exception as e:
-                st.error(e, icon="⛔️")
-                logger.error(f"Error processing prompt: {e}")
+            if st.session_state["vector_db"] is not None:
+                st.session_state["messages"].append(
+                    {"role": "assistant", "content": response}
+                )
         else:
             if st.session_state["vector_db"] is None:
                 st.warning("Upload a PDF file to begin chat...")
