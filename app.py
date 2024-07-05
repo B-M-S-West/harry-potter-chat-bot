@@ -58,7 +58,14 @@ def main():
         index=available_models.index("llama2") if "llama2" in available_models else 0
     )
 
-    col1.image("static/harry_potter.jpg", width=300)
+    # Check for different image formats
+    image_formats = ['jpg', 'png', 'jpeg', 'gif']
+    image_path = next((f"static/harry_potter.{ext}" for ext in image_formats if os.path.exists(f"static/harry_potter.{ext}")), None)
+
+    if image_path:
+        col1.image(image_path, width=300)
+    else:
+        col1.warning("Harry Potter image not found. Place an image named 'harry_potter' with a common image extension in the 'static' folder.")
 
     # Initialize database
     initialize_database()
